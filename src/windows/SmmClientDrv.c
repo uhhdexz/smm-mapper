@@ -70,7 +70,6 @@ static NTSTATUS ExecuteRequest(REQUEST *Request,
 
   NtStatus = STATUS_SUCCESS;
   if (Mailbox->Magic != MAILBOX_MAGIC ||
-      Mailbox->Version != MAILBOX_VERSION ||
       Mailbox->HeaderSize < sizeof(MAILBOX) ||
       Mailbox->TotalSize < MAILBOX_TOTAL_SIZE ||
       Mailbox->PayloadOffset + MAILBOX_PAYLOAD_CAPACITY >
@@ -104,6 +103,19 @@ static NTSTATUS ExecuteRequest(REQUEST *Request,
   Request->Generation = Mailbox->Generation;
   Request->Result = Mailbox->Result;
   Request->Sequence = Mailbox->Sequence;
+  Request->DebugLogSize = 0;
+  if (Mailbox->DebugLogCapacity != 0 &&
+      Mailbox->DebugLogCapacity <= MAILBOX_LOG_CAPACITY &&
+      Mailbox->DebugLogSize <= Mailbox->DebugLogCapacity) {
+    Request->DebugLogSize = Mailbox->DebugLogSize;
+    if (Request->DebugLogSize > MAILBOX_LOG_CAPACITY) {
+      Request->DebugLogSize = MAILBOX_LOG_CAPACITY;
+    }
+    if (Request->DebugLogSize != 0) {
+      RtlCopyMemory(Request->DebugLog, Mailbox->DebugLog,
+                    Request->DebugLogSize);
+    }
+  }
 
 Done:
   MmUnmapIoSpace(Mailbox, Request->MailboxSize);

@@ -41,13 +41,15 @@ typedef UINTN EFI_TPL;
 #define VERBOSE 1
 #define COMM_MAGIC 0x56444D53U
 #define COMM_VERSION 4U
+#define COMM_LOAD_INLINE 1U
+#define COMM_LOAD_MAILBOX 2U
 #define COMM_HEADER_SIZE 32U
 #define REASON_LOAD 1U
 #define REASON_UNLOAD 2U
 #define MAILBOX_MAGIC 0x58425645444D4D53ULL
-#define MAILBOX_VERSION 1U
 #define MAILBOX_HEADER_SIZE 0x1000U
 #define MAILBOX_PAYLOAD_CAPACITY (256U * 1024U)
+#define MAILBOX_LOG_CAPACITY 3072U
 #define MAILBOX_TOTAL_SIZE \
   (MAILBOX_HEADER_SIZE + MAILBOX_PAYLOAD_CAPACITY)
 #define SW_SMI_VALUE 0xD5U
@@ -223,7 +225,6 @@ typedef struct {
 
 typedef struct {
   UINT64 Magic;
-  UINT32 Version;
   UINT32 HeaderSize;
   UINT32 TotalSize;
   UINT32 Command;
@@ -239,6 +240,9 @@ typedef struct {
   UINT64 PayloadHash;
   UINT64 PayloadOffset;
   UINT64 PayloadBase;
+  UINT32 DebugLogSize;
+  UINT32 DebugLogCapacity;
+  UINT8 DebugLog[MAILBOX_LOG_CAPACITY];
   UINT8 Reserved[128];
 } MAILBOX;
 
@@ -381,6 +385,36 @@ static VOID *gTrackedPools[MAX_TRACKED_POOLS];
 
 static VOID IoWait(VOID) { __outbyte(0x80, 0); }
 
+static VOID MailboxLogReset(VOID) {
+  if (gMailbox == 0 || gMailbox->Magic != MAILBOX_MAGIC ||
+      gMailbox->DebugLogCapacity == 0) {
+    return;
+  }
+  gMailbox->DebugLogSize = 0;
+  gMailbox->DebugLog[0] = 0;
+}
+
+static VOID MailboxLogChar(char Ch) {
+  UINT32 Size;
+  UINT32 Capacity;
+
+  if (gMailbox == 0 || gMailbox->Magic != MAILBOX_MAGIC ||
+      gMailbox->DebugLogCapacity == 0) {
+    return;
+  }
+  Capacity = gMailbox->DebugLogCapacity;
+  if (Capacity == 0 || Capacity > MAILBOX_LOG_CAPACITY) {
+    Capacity = MAILBOX_LOG_CAPACITY;
+  }
+  Size = gMailbox->DebugLogSize;
+  if (Size + 1 >= Capacity) {
+    return;
+  }
+  gMailbox->DebugLog[Size] = (UINT8)Ch;
+  gMailbox->DebugLogSize = Size + 1;
+  gMailbox->DebugLog[Size + 1] = 0;
+}
+
 static VOID SerialInit(VOID) {
   __outbyte(COM1_PORT + 1, 0x00);
   __outbyte(COM1_PORT + 3, 0x80);
@@ -400,6 +434,7 @@ static VOID SerialPutChar(char Ch) {
   while (((__inbyte(COM1_PORT + 5) & 0x20) == 0) && Guard--) {
   }
   __outbyte(COM1_PORT, (UINT8)Ch);
+  MailboxLogChar(Ch);
 }
 
 static VOID EFIAPI SerialPrint(const char *Text) {
@@ -964,15 +999,22 @@ static VOID ConfigureMailbox(UINT64 MailboxPhysical, UINT32 MailboxSize,
     gControlSwSmiValue = SwSmiValue;
   }
   if (gMailbox->Magic != MAILBOX_MAGIC ||
-      gMailbox->Version != MAILBOX_VERSION) {
+      gMailbox->HeaderSize < sizeof(MAILBOX) ||
+      gMailbox->TotalSize < MAILBOX_TOTAL_SIZE ||
+      gMailbox->PayloadOffset < gMailbox->HeaderSize ||
+      gMailbox->PayloadOffset + gMailbox->PayloadCapacity >
+          gMailbox->TotalSize ||
+      gMailbox->DebugLogCapacity == 0 ||
+      gMailbox->DebugLogCapacity > MAILBOX_LOG_CAPACITY) {
     ZeroMem(gMailbox, sizeof(MAILBOX));
     gMailbox->Magic = MAILBOX_MAGIC;
-    gMailbox->Version = MAILBOX_VERSION;
     gMailbox->HeaderSize = MAILBOX_HEADER_SIZE;
     gMailbox->TotalSize = MailboxSize;
     gMailbox->SwSmiValue = gControlSwSmiValue;
     gMailbox->PayloadCapacity = MAILBOX_PAYLOAD_CAPACITY;
     gMailbox->PayloadOffset = MAILBOX_HEADER_SIZE;
+    gMailbox->DebugLogCapacity = MAILBOX_LOG_CAPACITY;
+    gMailbox->DebugLogSize = 0;
     gMailbox->Status = STATUS_IDLE;
   }
   UpdateMailboxState();
@@ -1037,7 +1079,6 @@ static EFI_STATUS EFIAPI ControlSwSmiHandler(EFI_HANDLE DispatchHandle,
   }
 
   if (gMailbox == 0 || gMailbox->Magic != MAILBOX_MAGIC ||
-      gMailbox->Version != MAILBOX_VERSION ||
       gMailbox->HeaderSize < sizeof(MAILBOX) ||
       gMailbox->TotalSize < MAILBOX_TOTAL_SIZE) {
     return EFI_NOT_FOUND;
@@ -1048,6 +1089,7 @@ static EFI_STATUS EFIAPI ControlSwSmiHandler(EFI_HANDLE DispatchHandle,
     return EFI_SUCCESS;
   }
 
+  MailboxLogReset();
   gMailbox->Status = STATUS_BUSY;
   gMailbox->Result = EFI_SUCCESS;
   gMailbox->LastCommand = Command;
@@ -1100,7 +1142,11 @@ static EFI_STATUS EFIAPI CommunicationHandler(EFI_HANDLE DispatchHandle,
                                                     VOID *CommBuffer,
                                                     UINTN *CommBufferSize) {
   COMM_MESSAGE *Message = (COMM_MESSAGE *)CommBuffer;
+  const UINT8 *Payload;
   UINTN MinimumSize;
+  UINTN PayloadSize;
+  UINT64 ExpectedHash;
+  UINT64 ActualHash;
   (void)DispatchHandle;
   (void)Context;
 
@@ -1119,15 +1165,40 @@ static EFI_STATUS EFIAPI CommunicationHandler(EFI_HANDLE DispatchHandle,
   ConfigureMailbox(Message->MailboxPhysical, Message->MailboxSize,
                    Message->SwSmiValue);
 
-  MinimumSize = COMM_HEADER_SIZE + (UINTN)Message->PayloadSize;
-  if (Message->PayloadSize == 0 || Message->PayloadSize >= PAYLOAD_FILE_LIMIT ||
-      *CommBufferSize < MinimumSize) {
+  PayloadSize = (UINTN)Message->PayloadSize;
+  if (PayloadSize == 0 || PayloadSize >= PAYLOAD_FILE_LIMIT) {
     SerialPrint("comm payload bounds rejected\n");
     return EFI_INVALID_PARAMETER;
   }
 
-  return AcceptPayloadBytes(Message->Payload, Message->PayloadSize,
-                            "SMM communication");
+  if (Message->Command == COMM_LOAD_INLINE) {
+    MinimumSize = COMM_HEADER_SIZE + PayloadSize;
+    if (*CommBufferSize < MinimumSize) {
+      SerialPrint("comm payload bounds rejected\n");
+      return EFI_INVALID_PARAMETER;
+    }
+    Payload = Message->Payload;
+  } else if (Message->Command == COMM_LOAD_MAILBOX) {
+    if (gMailbox == 0 ||
+        gMailbox->PayloadOffset < gMailbox->HeaderSize ||
+        gMailbox->PayloadOffset + PayloadSize > gMailbox->TotalSize ||
+        gMailbox->PayloadSize != PayloadSize) {
+      SerialPrint("mailbox payload bounds rejected\n");
+      return EFI_INVALID_PARAMETER;
+    }
+    Payload = (const UINT8 *)gMailbox + gMailbox->PayloadOffset;
+    ExpectedHash = gMailbox->PayloadHash;
+    ActualHash = Hash64(Payload, PayloadSize);
+    if (ExpectedHash != 0 && ExpectedHash != ActualHash) {
+      SerialPrint("mailbox payload hash mismatch\n");
+      return EFI_INVALID_PARAMETER;
+    }
+  } else {
+    SerialPrint("comm command rejected\n");
+    return EFI_UNSUPPORTED;
+  }
+
+  return AcceptPayloadBytes(Payload, PayloadSize, "SMM communication");
 }
 
 static EFI_STATUS RegisterSmmCommunication(VOID) {

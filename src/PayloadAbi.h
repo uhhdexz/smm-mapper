@@ -18,7 +18,6 @@ typedef UINT64 EFI_STATUS;
 #define REASON_UNLOAD 2U
 
 #define MAILBOX_MAGIC 0x58425645444D4D53ULL
-#define MAILBOX_VERSION 1U
 #define MAILBOX_HEADER_SIZE 0x1000U
 #define MAILBOX_PAYLOAD_CAPACITY (256U * 1024U)
 #define MAILBOX_TOTAL_SIZE \
@@ -87,7 +86,6 @@ typedef EFI_STATUS(EFIAPI *PAYLOAD_ENTRY)(
 
 typedef struct {
   UINT64 Magic;
-  UINT32 Version;
   UINT32 HeaderSize;
   UINT32 TotalSize;
   UINT32 Command;
@@ -108,7 +106,6 @@ typedef struct {
 
 typedef struct {
   UINT64 Magic;
-  UINT32 Version;
   UINT32 Size;
   UINT32 SwSmiValue;
   UINT64 MailboxPhysical;

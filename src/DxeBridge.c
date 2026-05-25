@@ -38,11 +38,13 @@ typedef UINT64 EFI_PHYSICAL_ADDRESS;
 #define VERBOSE 1
 #define COMM_MAGIC 0x56444D53U
 #define COMM_VERSION 4U
+#define COMM_LOAD_INLINE 1U
+#define COMM_LOAD_MAILBOX 2U
 #define COMM_HEADER_SIZE 32U
 #define MAILBOX_MAGIC 0x58425645444D4D53ULL
-#define MAILBOX_VERSION 1U
 #define MAILBOX_HEADER_SIZE 0x1000U
 #define MAILBOX_PAYLOAD_CAPACITY (256U * 1024U)
+#define MAILBOX_LOG_CAPACITY 3072U
 #define MAILBOX_TOTAL_SIZE \
   (MAILBOX_HEADER_SIZE + MAILBOX_PAYLOAD_CAPACITY)
 #define SW_SMI_VALUE 0xD5U
@@ -275,7 +277,6 @@ typedef struct {
 
 typedef struct {
   UINT64 Magic;
-  UINT32 Version;
   UINT32 HeaderSize;
   UINT32 TotalSize;
   UINT32 Command;
@@ -291,12 +292,14 @@ typedef struct {
   UINT64 PayloadHash;
   UINT64 PayloadOffset;
   UINT64 PayloadBase;
+  UINT32 DebugLogSize;
+  UINT32 DebugLogCapacity;
+  UINT8 DebugLog[MAILBOX_LOG_CAPACITY];
   UINT8 Reserved[128];
 } MAILBOX;
 
 typedef struct {
   UINT64 Magic;
-  UINT32 Version;
   UINT32 Size;
   UINT32 SwSmiValue;
   UINT64 MailboxPhysical;
@@ -392,6 +395,16 @@ static VOID CopyMemLocal(VOID *Destination, const VOID *Source, UINTN Size) {
   }
 }
 
+static UINT64 Hash64(const VOID *Buffer, UINTN Size) {
+  const UINT8 *Data = (const UINT8 *)Buffer;
+  UINT64 Hash = 0xCBF29CE484222325ULL;
+  while (Size--) {
+    Hash ^= *Data++;
+    Hash *= 0x100000001B3ULL;
+  }
+  return Hash;
+}
+
 VOID *memset(VOID *Destination, int Value, size_t Size) {
   UINT8 *Dst = (UINT8 *)Destination;
   while (Size--) {
@@ -410,7 +423,6 @@ static VOID InitializeMailboxContents(MAILBOX *Mailbox,
                                       UINT32 Size) {
   ZeroMem(Mailbox, Size);
   Mailbox->Magic = MAILBOX_MAGIC;
-  Mailbox->Version = MAILBOX_VERSION;
   Mailbox->HeaderSize = MAILBOX_HEADER_SIZE;
   Mailbox->TotalSize = Size;
   Mailbox->Status = STATUS_IDLE;
@@ -418,6 +430,8 @@ static VOID InitializeMailboxContents(MAILBOX *Mailbox,
   Mailbox->PayloadCapacity = MAILBOX_PAYLOAD_CAPACITY;
   Mailbox->PayloadOffset = MAILBOX_HEADER_SIZE;
   Mailbox->PayloadBase = (UINT64)Physical + MAILBOX_HEADER_SIZE;
+  Mailbox->DebugLogCapacity = MAILBOX_LOG_CAPACITY;
+  Mailbox->DebugLogSize = 0;
 }
 
 static EFI_STATUS PublishMailboxVariable(EFI_PHYSICAL_ADDRESS Physical,
@@ -434,7 +448,6 @@ static EFI_STATUS PublishMailboxVariable(EFI_PHYSICAL_ADDRESS Physical,
   }
   ZeroMem(&Info, sizeof(Info));
   Info.Magic = MAILBOX_MAGIC;
-  Info.Version = MAILBOX_VERSION;
   Info.Size = (UINT32)sizeof(Info);
   Info.SwSmiValue = SW_SMI_VALUE;
   Info.MailboxPhysical = Physical;
@@ -561,6 +574,29 @@ static EFI_STATUS ReadPayloadFile(UINTN *PayloadSize) {
   return EFI_NOT_FOUND;
 }
 
+static EFI_STATUS StagePayloadInMailbox(UINTN PayloadSize) {
+  MAILBOX *Mailbox;
+  UINT8 *PayloadBase;
+
+  if (gMailboxPhysical == 0 || gMailboxSize < MAILBOX_TOTAL_SIZE ||
+      PayloadSize == 0 || PayloadSize > MAILBOX_PAYLOAD_CAPACITY) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Mailbox = (MAILBOX *)(UINTN)gMailboxPhysical;
+  if (Mailbox->Magic != MAILBOX_MAGIC ||
+      Mailbox->PayloadOffset < Mailbox->HeaderSize ||
+      Mailbox->PayloadOffset + PayloadSize > Mailbox->TotalSize) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  PayloadBase = (UINT8 *)Mailbox + Mailbox->PayloadOffset;
+  CopyMemLocal(PayloadBase, gPayloadFile, PayloadSize);
+  Mailbox->PayloadSize = (UINT32)PayloadSize;
+  Mailbox->PayloadHash = Hash64(gPayloadFile, PayloadSize);
+  return EFI_SUCCESS;
+}
+
 static VOID *FindSmmCommRegion(UINTN RequiredSize, UINT32 *OriginalType) {
   EDKII_PI_SMM_COMMUNICATION_REGION_TABLE *Table = 0;
   UINT8 *Entry;
@@ -666,6 +702,8 @@ static EFI_STATUS TrySendPayload(const char *Reason) {
   EFI_STATUS TimerStatus;
   UINTN PayloadSize = 0;
   UINTN CommSize;
+  UINTN CommPayloadSize;
+  UINT32 CommCommand;
 
   if (gSent != 0) {
     return EFI_ALREADY_STARTED;
@@ -702,6 +740,21 @@ static EFI_STATUS TrySendPayload(const char *Reason) {
 
   CommSize = 24 + COMM_HEADER_SIZE + PayloadSize;
   CommBuffer = FindSmmCommRegion(CommSize, &OriginalRegionType);
+  CommPayloadSize = PayloadSize;
+  CommCommand = COMM_LOAD_INLINE;
+  if (CommBuffer == 0) {
+    Status = StagePayloadInMailbox(PayloadSize);
+    if (EFI_ERROR(Status)) {
+      SerialPrint("mailbox payload stage failed ");
+      SerialHex64(Status);
+      SerialPrint("\n");
+      return Status;
+    }
+    CommPayloadSize = 0;
+    CommCommand = COMM_LOAD_MAILBOX;
+    CommSize = 24 + COMM_HEADER_SIZE;
+    CommBuffer = FindSmmCommRegion(CommSize, &OriginalRegionType);
+  }
   if (CommBuffer == 0) {
     if (VERBOSE) {
       SerialPrint("falling back to static comm buffer\n");
@@ -713,16 +766,18 @@ static EFI_STATUS TrySendPayload(const char *Reason) {
   ZeroMem(CommBuffer, CommSize);
   Header = (EFI_SMM_COMMUNICATE_HEADER *)CommBuffer;
   Header->HeaderGuid = gCommunicationGuid;
-  Header->MessageLength = COMM_HEADER_SIZE + PayloadSize;
+  Header->MessageLength = COMM_HEADER_SIZE + CommPayloadSize;
   Message = (COMM_MESSAGE *)Header->Data;
   Message->Magic = COMM_MAGIC;
   Message->Version = COMM_VERSION;
-  Message->Command = 1;
+  Message->Command = CommCommand;
   Message->PayloadSize = (UINT32)PayloadSize;
   Message->MailboxPhysical = (UINT64)gMailboxPhysical;
   Message->MailboxSize = gMailboxSize;
   Message->SwSmiValue = SW_SMI_VALUE;
-  CopyMemLocal(Message->Payload, gPayloadFile, PayloadSize);
+  if (CommPayloadSize != 0) {
+    CopyMemLocal(Message->Payload, gPayloadFile, PayloadSize);
+  }
 
   if (VERBOSE) {
     SerialPrint("communicating payload bytes=0x");

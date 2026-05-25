@@ -45,7 +45,6 @@ static int ReadMailboxInfo(MAILBOX_INFO *Info) {
   Got = GetFirmwareEnvironmentVariableW(L"SMM_HOTRELOAD", Guid, Info,
                                         sizeof(*Info));
   if (Got != sizeof(*Info) || Info->Magic != MAILBOX_MAGIC ||
-      Info->Version != MAILBOX_VERSION ||
       Info->MailboxPhysical == 0 ||
       Info->MailboxSize < MAILBOX_TOTAL_SIZE) {
     fwprintf(stderr,
@@ -88,6 +87,56 @@ static uint8_t *ReadFileBytes(const wchar_t *Path, DWORD *SizeOut) {
   CloseHandle(File);
   *SizeOut = Got;
   return Bytes;
+}
+
+static void Com1Write(const char *Text, DWORD Size) {
+  HANDLE Port;
+  DCB Dcb;
+  COMMTIMEOUTS Timeouts;
+  DWORD Written;
+
+  if (Text == NULL || Size == 0) {
+    return;
+  }
+  Port = CreateFileW(L"\\\\.\\COM1", GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+                     0, NULL);
+  if (Port == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  SecureZeroMemory(&Dcb, sizeof(Dcb));
+  Dcb.DCBlength = sizeof(Dcb);
+  if (GetCommState(Port, &Dcb)) {
+    Dcb.BaudRate = CBR_115200;
+    Dcb.ByteSize = 8;
+    Dcb.Parity = NOPARITY;
+    Dcb.StopBits = ONESTOPBIT;
+    Dcb.fBinary = TRUE;
+    Dcb.fDtrControl = DTR_CONTROL_ENABLE;
+    Dcb.fRtsControl = RTS_CONTROL_ENABLE;
+    SetCommState(Port, &Dcb);
+  }
+  SecureZeroMemory(&Timeouts, sizeof(Timeouts));
+  Timeouts.WriteTotalTimeoutConstant = 250;
+  SetCommTimeouts(Port, &Timeouts);
+  WriteFile(Port, Text, Size, &Written, NULL);
+  CloseHandle(Port);
+}
+
+static void PrintDebugLog(const REQUEST *Request) {
+  DWORD Size;
+
+  if (Request == NULL || Request->DebugLogSize == 0) {
+    return;
+  }
+  Size = Request->DebugLogSize;
+  if (Size > MAILBOX_LOG_CAPACITY) {
+    Size = MAILBOX_LOG_CAPACITY;
+  }
+  fwrite(Request->DebugLog, 1, Size, stdout);
+  if (Size == 0 || Request->DebugLog[Size - 1] != '\n') {
+    fputc('\n', stdout);
+  }
+  Com1Write(Request->DebugLog, Size);
 }
 
 static int ExecuteCommand(uint32_t Command, const wchar_t *PayloadPath) {
@@ -157,6 +206,7 @@ static int ExecuteCommand(uint32_t Command, const wchar_t *PayloadPath) {
           Request->Status, (unsigned long long)Request->Result,
           Request->Loaded, Request->Generation,
           (unsigned long long)Request->Sequence);
+  PrintDebugLog(Request);
 
   CloseHandle(Device);
   HeapFree(GetProcessHeap(), 0, Payload);

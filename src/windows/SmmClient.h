@@ -9,9 +9,9 @@
   CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #define MAILBOX_MAGIC 0x58425645444D4D53ULL
-#define MAILBOX_VERSION 1U
 #define MAILBOX_HEADER_SIZE 0x1000U
 #define MAILBOX_PAYLOAD_CAPACITY (256U * 1024U)
+#define MAILBOX_LOG_CAPACITY 3072U
 #define MAILBOX_TOTAL_SIZE \
   (MAILBOX_HEADER_SIZE + MAILBOX_PAYLOAD_CAPACITY)
 #define SW_SMI_VALUE 0xD5U
@@ -29,7 +29,6 @@
 
 typedef struct {
   unsigned long long Magic;
-  unsigned int Version;
   unsigned int HeaderSize;
   unsigned int TotalSize;
   volatile unsigned int Command;
@@ -45,12 +44,14 @@ typedef struct {
   volatile unsigned long long PayloadHash;
   unsigned long long PayloadOffset;
   volatile unsigned long long PayloadBase;
+  volatile unsigned int DebugLogSize;
+  unsigned int DebugLogCapacity;
+  unsigned char DebugLog[MAILBOX_LOG_CAPACITY];
   unsigned char Reserved[128];
 } MAILBOX;
 
 typedef struct {
   unsigned long long Magic;
-  unsigned int Version;
   unsigned int Size;
   unsigned int SwSmiValue;
   unsigned long long MailboxPhysical;
@@ -68,9 +69,10 @@ typedef struct {
   unsigned int Status;
   unsigned int Loaded;
   unsigned int Generation;
-  unsigned int Reserved;
+  unsigned int DebugLogSize;
   unsigned long long Result;
   unsigned long long Sequence;
+  char DebugLog[MAILBOX_LOG_CAPACITY];
   unsigned char Payload[1];
 } REQUEST;
 
