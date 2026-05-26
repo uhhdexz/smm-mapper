@@ -35,7 +35,6 @@ typedef UINT64 EFI_PHYSICAL_ADDRESS;
 #define TPL_CALLBACK 8U
 #define COM1_PORT 0x3F8
 #define PAYLOAD_FILE_LIMIT (256U * 1024U)
-#define VERBOSE 1
 #define COMM_MAGIC 0x56444D53U
 #define COMM_VERSION 4U
 #define COMM_LOAD_INLINE 1U
@@ -760,11 +759,9 @@ static EFI_STATUS InstallWmiDoorbell(VOID) {
   Status = gSystemTable->BootServices->LocateProtocol(
       &gEfiAcpiTableProtocolGuid, 0, (VOID **)&AcpiTable);
   if (EFI_ERROR(Status) || AcpiTable == 0 || AcpiTable->InstallAcpiTable == 0) {
-    if (VERBOSE) {
-      SerialPrint("ACPI table protocol unavailable ");
-      SerialHex64(Status);
-      SerialPrint("\n");
-    }
+    SerialPrint("ACPI table protocol unavailable ");
+    SerialHex64(Status);
+    SerialPrint("\n");
     return Status;
   }
 
@@ -783,7 +780,7 @@ static EFI_STATUS InstallWmiDoorbell(VOID) {
   } else {
     gDoorbellInstalled = 1;
   }
-  if (!EFI_ERROR(Status) && VERBOSE) {
+  if (!EFI_ERROR(Status)) {
     SerialPrint("WMI doorbell installed smi=0x");
     SerialHex64(SmiPort);
     SerialPrint(" sw=0x");
@@ -858,10 +855,10 @@ static EFI_STATUS PublishMailboxVariable(EFI_PHYSICAL_ADDRESS Physical,
       SerialPrint("SetVariable(mailbox NV) failed ");
       SerialHex64(Status);
       SerialPrint("\n");
-    } else if (VERBOSE) {
+    } else {
       SerialPrint("mailbox variable published NV fallback\n");
     }
-  } else if (VERBOSE) {
+  } else {
     SerialPrint("mailbox variable published\n");
   }
   return Status;
@@ -893,15 +890,13 @@ static EFI_STATUS EnsureMailbox(VOID) {
   gMailboxSize = (UINT32)(Pages << 12);
   InitializeMailboxContents((MAILBOX *)(UINTN)Address, Address,
                             gMailboxSize);
-  if (VERBOSE) {
-    SerialPrint("mailbox base=0x");
-    SerialHex64(Address);
-    SerialPrint(" size=0x");
-    SerialHex64(gMailboxSize);
-    SerialPrint(" sw=0x");
-    SerialHex64(SW_SMI_VALUE);
-    SerialPrint("\n");
-  }
+  SerialPrint("mailbox base=0x");
+  SerialHex64(Address);
+  SerialPrint(" size=0x");
+  SerialHex64(gMailboxSize);
+  SerialPrint(" sw=0x");
+  SerialHex64(SW_SMI_VALUE);
+  SerialPrint("\n");
   PublishMailboxVariable(Address, gMailboxSize);
   return EFI_SUCCESS;
 }
@@ -1004,9 +999,7 @@ static VOID *FindSmmCommRegion(UINTN RequiredSize, UINT32 *OriginalType) {
   }
   if (Table == 0 || Table->Version != 1 || Table->NumberOfEntries == 0 ||
       Table->DescriptorSize < sizeof(EFI_MEMORY_DESCRIPTOR)) {
-    if (VERBOSE) {
-      SerialPrint("SMM comm region table missing\n");
-    }
+    SerialPrint("SMM comm region table missing\n");
     return 0;
   }
 
@@ -1026,22 +1019,18 @@ static VOID *FindSmmCommRegion(UINTN RequiredSize, UINT32 *OriginalType) {
       if (Desc->Type == EFI_CONVENTIONAL_MEMORY) {
         Desc->Type = EFI_RESERVED_MEMORY_TYPE;
       }
-      if (VERBOSE) {
-        SerialPrint("using SMM comm region base=0x");
-        SerialHex64(Desc->PhysicalStart);
-        SerialPrint(" size=0x");
-        SerialHex64(Bytes);
-        SerialPrint(" type=0x");
-        SerialHex64(*OriginalType);
-        SerialPrint("\n");
-      }
+      SerialPrint("using SMM comm region base=0x");
+      SerialHex64(Desc->PhysicalStart);
+      SerialPrint(" size=0x");
+      SerialHex64(Bytes);
+      SerialPrint(" type=0x");
+      SerialHex64(*OriginalType);
+      SerialPrint("\n");
       return (VOID *)(UINTN)Desc->PhysicalStart;
     }
   }
 
-  if (VERBOSE) {
-    SerialPrint("no SMM comm region large enough\n");
-  }
+  SerialPrint("no SMM comm region large enough\n");
   return 0;
 }
 
@@ -1097,30 +1086,24 @@ static EFI_STATUS TrySendPayload(const char *Reason) {
     return EFI_ALREADY_STARTED;
   }
 
-  if (VERBOSE) {
-    SerialPrint("bridge attempt: ");
-    SerialPrint(Reason);
-    SerialPrint("\n");
-  }
+  SerialPrint("bridge attempt: ");
+  SerialPrint(Reason);
+  SerialPrint("\n");
 
   Status = ReadPayloadFile(&PayloadSize);
   if (EFI_ERROR(Status)) {
-    if (VERBOSE) {
-      SerialPrint("payload not available ");
-      SerialHex64(Status);
-      SerialPrint("\n");
-    }
+    SerialPrint("payload not available ");
+    SerialHex64(Status);
+    SerialPrint("\n");
     return Status;
   }
 
   Status = Bs->LocateProtocol(&gEfiSmmCommunicationProtocolGuid, 0,
                               (VOID **)&SmmComm);
   if (EFI_ERROR(Status) || SmmComm == 0) {
-    if (VERBOSE) {
-      SerialPrint("SmmCommunication unavailable ");
-      SerialHex64(Status);
-      SerialPrint("\n");
-    }
+    SerialPrint("SmmCommunication unavailable ");
+    SerialHex64(Status);
+    SerialPrint("\n");
     return Status;
   }
 
@@ -1144,9 +1127,7 @@ static EFI_STATUS TrySendPayload(const char *Reason) {
     CommBuffer = FindSmmCommRegion(CommSize, &OriginalRegionType);
   }
   if (CommBuffer == 0) {
-    if (VERBOSE) {
-      SerialPrint("falling back to static comm buffer\n");
-    }
+    SerialPrint("falling back to static comm buffer\n");
     CommBuffer = gCommBuffer;
     OriginalRegionType = 0xFFFFFFFFU;
   }
@@ -1167,11 +1148,9 @@ static EFI_STATUS TrySendPayload(const char *Reason) {
     CopyMemLocal(Message->Payload, gPayloadFile, PayloadSize);
   }
 
-  if (VERBOSE) {
-    SerialPrint("communicating payload bytes=0x");
-    SerialHex64(PayloadSize);
-    SerialPrint("\n");
-  }
+  SerialPrint("communicating payload bytes=0x");
+  SerialHex64(PayloadSize);
+  SerialPrint("\n");
   Status = SmmComm->Communicate(SmmComm, Header, &CommSize);
   RestoreSmmCommRegionType(CommBuffer, OriginalRegionType);
   if (!EFI_ERROR(Status)) {
@@ -1185,7 +1164,7 @@ static EFI_STATUS TrySendPayload(const char *Reason) {
         SerialPrint("timer cancel failed ");
         SerialHex64(TimerStatus);
         SerialPrint("\n");
-      } else if (VERBOSE) {
+      } else {
         SerialPrint("retry timer canceled\n");
       }
     }
@@ -1236,9 +1215,7 @@ static VOID RegisterRetryTimer(VOID) {
     gRetryTimerEvent = 0;
     return;
   }
-  if (VERBOSE) {
-    SerialPrint("retry timer registered\n");
-  }
+  SerialPrint("retry timer registered\n");
 }
 
 static VOID RegisterNotify(EFI_GUID *Guid, EFI_EVENT *Event, VOID **Registration,
@@ -1267,11 +1244,9 @@ static VOID RegisterNotify(EFI_GUID *Guid, EFI_EVENT *Event, VOID **Registration
     *Event = 0;
     return;
   }
-  if (VERBOSE) {
-    SerialPrint("notify registered for ");
-    SerialPrint(Name);
-    SerialPrint("\n");
-  }
+  SerialPrint("notify registered for ");
+  SerialPrint(Name);
+  SerialPrint("\n");
 }
 
 EFI_STATUS EFIAPI DxeBridgeEntry(EFI_HANDLE ImageHandle,

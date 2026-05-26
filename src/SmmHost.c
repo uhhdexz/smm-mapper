@@ -39,7 +39,6 @@ typedef UINTN EFI_TPL;
 #define COM1_PORT 0x3F8
 #define PAYLOAD_FILE_LIMIT (256U * 1024U)
 #define PAYLOAD_IMAGE_LIMIT (768U * 1024U)
-#define VERBOSE 1
 #define COMM_MAGIC 0x56444D53U
 #define COMM_VERSION 4U
 #define COMM_LOAD_INLINE 1U
@@ -669,11 +668,9 @@ static EFI_STATUS ReadPayloadFile(EFI_SYSTEM_TABLE *SystemTable,
   Status = Bs->LocateHandleBuffer(2, &gEfiSimpleFileSystemProtocolGuid, 0,
                                   &HandleCount, &Handles);
   if (EFI_ERROR(Status)) {
-    if (VERBOSE) {
-      SerialPrint("LocateHandleBuffer(SimpleFS) failed ");
-      SerialHex64(Status);
-      SerialPrint("\n");
-    }
+    SerialPrint("LocateHandleBuffer(SimpleFS) failed ");
+    SerialHex64(Status);
+    SerialPrint("\n");
     return Status;
   }
 
@@ -704,16 +701,12 @@ static EFI_STATUS ReadPayloadFile(EFI_SYSTEM_TABLE *SystemTable,
       if (!EFI_ERROR(Status) && ReadSize > 0 && ReadSize < PAYLOAD_FILE_LIMIT) {
         *PayloadSize = ReadSize;
         Bs->FreePool(Handles);
-        if (VERBOSE) {
-          SerialPrint("loaded PAYLOAD.EFI bytes=0x");
-          SerialHex64(ReadSize);
-          SerialPrint("\n");
-        }
+        SerialPrint("loaded PAYLOAD.EFI bytes=0x");
+        SerialHex64(ReadSize);
+        SerialPrint("\n");
         return EFI_SUCCESS;
       }
-      if (VERBOSE) {
-        SerialPrint("read failed or file too large\n");
-      }
+      SerialPrint("read failed or file too large\n");
     } else {
       Root->Close(Root);
     }
@@ -722,9 +715,7 @@ static EFI_STATUS ReadPayloadFile(EFI_SYSTEM_TABLE *SystemTable,
   if (Handles != 0) {
     Bs->FreePool(Handles);
   }
-  if (VERBOSE) {
-    SerialPrint("\\EFI\\SMM\\PAYLOAD.EFI not found\n");
-  }
+  SerialPrint("\\EFI\\SMM\\PAYLOAD.EFI not found\n");
   return EFI_NOT_FOUND;
 }
 
@@ -828,9 +819,7 @@ static EFI_STATUS LoadPe32Plus(UINT8 *File, UINTN FileSize,
   if (Delta != 0) {
     UINT32 Offset = 0;
     if (RelocRva == 0 || RelocSize == 0) {
-      if (VERBOSE) {
-        SerialPrint("payload has no relocation directory; assuming RIP-relative image\n");
-      }
+      SerialPrint("payload has no relocation directory; assuming RIP-relative image\n");
       *EntryPoint =
           (PAYLOAD_ENTRY)(VOID *)(gPayloadImage + AddressOfEntryPoint);
       return EFI_SUCCESS;
@@ -918,11 +907,9 @@ static EFI_STATUS UnloadPayload(const char *Reason) {
     return EFI_SUCCESS;
   }
 
-  if (VERBOSE) {
-    SerialPrint("unloading payload: ");
-    SerialPrint(Reason);
-    SerialPrint("\n");
-  }
+  SerialPrint("unloading payload: ");
+  SerialPrint(Reason);
+  SerialPrint("\n");
   PreparePayloadContext(REASON_UNLOAD);
   Status = gPayloadEntry(&gPayloadContext);
   if (EFI_ERROR(Status)) {
@@ -953,13 +940,11 @@ static EFI_STATUS InstallPayloadBytes(const UINT8 *Payload, UINTN PayloadSize,
     return EFI_INVALID_PARAMETER;
   }
 
-  if (VERBOSE) {
-    SerialPrint("installing payload: ");
-    SerialPrint(Reason);
-    SerialPrint(" bytes=0x");
-    SerialHex64(PayloadSize);
-    SerialPrint("\n");
-  }
+  SerialPrint("installing payload: ");
+  SerialPrint(Reason);
+  SerialPrint(" bytes=0x");
+  SerialHex64(PayloadSize);
+  SerialPrint("\n");
 
   if (Payload != gPayloadFile) {
     ZeroMem(gPayloadFile, PAYLOAD_FILE_LIMIT);
@@ -977,9 +962,7 @@ static EFI_STATUS InstallPayloadBytes(const UINT8 *Payload, UINTN PayloadSize,
   gPayloadEntry = PayloadEntry;
   gPayloadSize = PayloadSize;
   PreparePayloadContext(REASON_LOAD);
-  if (VERBOSE) {
-    SerialPrint("calling payload entry ABI\n");
-  }
+  SerialPrint("calling payload entry ABI\n");
   Status = PayloadEntry(&gPayloadContext);
   if (EFI_ERROR(Status)) {
     SerialPrint("load failed ");
@@ -1009,11 +992,9 @@ static EFI_STATUS TryLoadPayload(const char *Reason) {
     return EFI_SUCCESS;
   }
 
-  if (VERBOSE) {
-    SerialPrint("payload attempt: ");
-    SerialPrint(Reason);
-    SerialPrint("\n");
-  }
+  SerialPrint("payload attempt: ");
+  SerialPrint(Reason);
+  SerialPrint("\n");
 
   Status = ReadPayloadFile(gSystemTable, &PayloadSize);
   if (EFI_ERROR(Status)) {
@@ -1062,15 +1043,13 @@ static VOID ConfigureMailbox(UINT64 MailboxPhysical, UINT32 MailboxSize,
     gMailbox->Status = STATUS_IDLE;
   }
   UpdateMailboxState();
-  if (VERBOSE) {
-    SerialPrint("mailbox configured base=0x");
-    SerialHex64(MailboxPhysical);
-    SerialPrint(" size=0x");
-    SerialHex64(MailboxSize);
-    SerialPrint(" sw=0x");
-    SerialHex64(gControlSwSmiValue);
-    SerialPrint("\n");
-  }
+  SerialPrint("mailbox configured base=0x");
+  SerialHex64(MailboxPhysical);
+  SerialPrint(" size=0x");
+  SerialHex64(MailboxSize);
+  SerialPrint(" sw=0x");
+  SerialHex64(gControlSwSmiValue);
+  SerialPrint("\n");
 }
 
 static EFI_STATUS ReloadPayloadFromMailbox(VOID) {
@@ -1114,7 +1093,7 @@ static EFI_STATUS DispatchDoorbellToPayload(VOID) {
   MailboxLogReset();
   PreparePayloadContext(REASON_DOORBELL);
   Status = gPayloadEntry(&gPayloadContext);
-  if (EFI_ERROR(Status) && VERBOSE) {
+  if (EFI_ERROR(Status)) {
     SerialPrint("doorbell failed ");
     SerialHex64(Status);
     SerialPrint("\n");
@@ -1224,9 +1203,7 @@ static EFI_STATUS EFIAPI ControlSwSmiHandler(EFI_HANDLE DispatchHandle,
   (void)CommBufferSize;
 
   SerialInit();
-  if (VERBOSE) {
-    SerialPrint("control SMI entered\n");
-  }
+  SerialPrint("control SMI entered\n");
 
   if (gMailbox == 0 || gMailbox->Magic != MAILBOX_MAGIC ||
       gMailbox->HeaderSize < sizeof(MAILBOX) ||
@@ -1247,7 +1224,7 @@ static EFI_STATUS EFIAPI ControlSwSmiHandler(EFI_HANDLE DispatchHandle,
     SerialPrint("reload begin seq=0x");
     SerialHex64(gMailbox->Sequence);
     SerialPrint("\n");
-  } else if (VERBOSE) {
+  } else {
     SerialPrint("control command ");
     SerialHex64(Command);
     SerialPrint("\n");
@@ -1279,7 +1256,7 @@ static EFI_STATUS EFIAPI ControlSwSmiHandler(EFI_HANDLE DispatchHandle,
       SerialHex64(gPayloadGeneration);
       SerialPrint("\n");
     }
-  } else if (VERBOSE) {
+  } else {
     SerialPrint("control command result ");
     SerialHex64(Status);
     SerialPrint("\n");
@@ -1382,9 +1359,7 @@ static EFI_STATUS RegisterSmmCommunication(VOID) {
     return Status;
   }
 
-  if (VERBOSE) {
-    SerialPrint("communication handler registered\n");
-  }
+  SerialPrint("communication handler registered\n");
   return EFI_SUCCESS;
 }
 
@@ -1419,11 +1394,9 @@ static EFI_STATUS RegisterControlSwSmi(VOID) {
     return Status;
   }
 
-  if (VERBOSE) {
-    SerialPrint("SW SMI control registered value=0x");
-    SerialHex64(gControlSwSmiValue);
-    SerialPrint("\n");
-  }
+  SerialPrint("SW SMI control registered value=0x");
+  SerialHex64(gControlSwSmiValue);
+  SerialPrint("\n");
   return EFI_SUCCESS;
 }
 
@@ -1446,9 +1419,7 @@ EFI_STATUS EFIAPI SmmHostEntry(EFI_HANDLE ImageHandle,
   }
   Status = TryLoadPayload("initial dispatch");
   if (EFI_ERROR(Status)) {
-    if (VERBOSE) {
-      SerialPrint("waiting for DXE bridge payload delivery\n");
-    }
+    SerialPrint("waiting for DXE bridge payload delivery\n");
   }
   return EFI_SUCCESS;
 }
